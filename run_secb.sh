@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Default values
-mode=""
-llm_profile="llm.sonnet"
+mode="deepseek-chat"
+llm_profile="llm.DMXAPI"
 num_instances=200
 max_iterations=75
 label="eval"
