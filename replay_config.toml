@@ -1,0 +1,13 @@
+# OpenHands 回放配置文件
+
+[core]
+# 回放轨迹路径
+replay_trajectory_path = "trajectory.json"
+
+# Agent 配置
+default_agent = "CodeActAgent"
+max_iterations = 100
+
+# LLM 配置（回放时会使用轨迹中记录的响应，不会真正调用 LLM）
+[llm]
+model = "deepseek-chat"
