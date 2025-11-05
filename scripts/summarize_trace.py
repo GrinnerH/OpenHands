@@ -15,7 +15,9 @@ FIELD_ORDER = [
     'timestamp',
     'source',
     'kind',
+    'tool',
     'thought',
+    'llm_response',
     'command',
     'path',
     'view_range',
@@ -62,6 +64,7 @@ def _extract_exit_code(step: dict) -> int | None:
 
 def _build_row(
     step: dict,
+    children: list[dict],
     *,
     max_message: int,
     max_output_lines: int,
@@ -80,9 +83,20 @@ def _build_row(
     view_range = args.get('view_range')
     thought = args.get('thought')
 
+    tool_name = ''
+    llm_response = ''
+    tool_meta = step.get('tool_call_metadata')
+    if isinstance(tool_meta, dict):
+        tool_name = str(tool_meta.get('function_name', '') or '')
+        model_resp = tool_meta.get('model_response')
+        if isinstance(model_resp, dict):
+            choices = model_resp.get('choices') or []
+            if choices:
+                message_block = choices[0].get('message') or {}
+                llm_response = message_block.get('content') or ''
+
     message = step.get('message')
     exit_code = _extract_exit_code(step)
-    content = step.get('content')
     success = step.get('success')
 
     if message:
@@ -92,11 +106,25 @@ def _build_row(
     else:
         condensed = ''
 
+    outputs: list[str] = []
+    content = step.get('content')
     if content:
-        output_lines = list(_format_block(content, max_output_lines, ''))
-        output_str = '\n'.join(output_lines)
-    else:
-        output_str = ''
+        outputs.extend(_format_block(content, max_output_lines, ''))
+
+    for child in sorted(children, key=lambda item: item.get('id', 0)):
+        child_message = child.get('message')
+        if child_message:
+            outputs.append(_shorten_line(child_message, max_message))
+        child_content = child.get('content')
+        if child_content:
+            outputs.extend(_format_block(child_content, max_output_lines, ''))
+        if exit_code is None:
+            exit_code = _extract_exit_code(child)
+        child_success = child.get('success')
+        if child_success is not None:
+            success = child_success
+
+    output_str = '\n'.join(outputs)
 
     if isinstance(view_range, Sequence):
         view_repr = ','.join(str(v) for v in view_range)
@@ -108,7 +136,9 @@ def _build_row(
         'timestamp': step.get('timestamp', ''),
         'source': source,
         'kind': kind,
+        'tool': tool_name,
         'thought': _shorten_line(str(thought), max_message) if thought else '',
+        'llm_response': _shorten_line(llm_response, max_message) if llm_response else '',
         'command': command or '',
         'path': path or '',
         'view_range': view_repr,
@@ -128,10 +158,20 @@ def summarize_trace(
 ) -> list[dict[str, str]]:
     with path.open(encoding='utf-8') as fp:
         data = json.load(fp)
+
+    children_map: dict[int, list[dict]] = {}
+    for event in data:
+        cause = event.get('cause')
+        if isinstance(cause, int):
+            children_map.setdefault(cause, []).append(event)
+
     summaries: list[dict[str, str]] = []
     for step in data:
+        if isinstance(step.get('cause'), int):
+            continue
         row = _build_row(
             step,
+            children_map.get(step.get('id'), []),
             max_message=max_message,
             max_output_lines=max_output_lines,
         )
@@ -238,19 +278,34 @@ def main() -> None:
         max_output_lines=args.max_output_lines,
     )
 
+    default_suffix = {
+        'text': '.txt',
+        'csv': '.csv',
+        'xlsx': '.xlsx',
+    }[args.format]
+
+    if args.output:
+        out_path = args.output
+        if not out_path.is_absolute():
+            out_path = args.trace_path.parent / out_path
+    elif args.format == 'text':
+        out_path = None
+    else:
+        out_path = args.trace_path.with_suffix(default_suffix)
+
     if args.format == 'text':
         text = rows_to_text(summaries)
-        if args.output:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(text, encoding='utf-8')
+        if out_path:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text, encoding='utf-8')
         else:
             print(text)
     elif args.format == 'csv':
-        write_csv(summaries, args.output)
+        write_csv(summaries, out_path)
     else:  # xlsx
-        if args.output is None:
+        if out_path is None:
             parser.error('导出 XLSX 时必须通过 -o 指定输出文件路径。')
-        write_xlsx(summaries, args.output)
+        write_xlsx(summaries, out_path)
 
 
 if __name__ == '__main__':
